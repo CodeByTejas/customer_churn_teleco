@@ -102,5 +102,27 @@ Predicting "No" for everyone gives 73.5% accuracy and catches zero churners. Wit
 
 ## Further Works
 1. **Cost-based threshold and calibration.** Calibrate probabilities and pick the threshold from the actual cost of a retention offer vs. a lost customer, instead of max F1. Make the threshold configurable instead of baked into the artifact.
-2. **Experiment tracking and CI.** MLflow for runs and a model registry, DVC for data versioning, and a CI job that runs tests + training and only promotes a model if it beats the current one. Dockerise the API.
-3. **Monitoring.** Log predictions, track drift on key features and on the score distribution, add a batch endpoint, auth, and SHAP explanations so the retention team can see why a customer was flagged.
+The current project chooses the cutoff for a statistical reason. The improvement would choose it for a business reason, and also make it adjustable. The point has three parts.
+
+**A. How the threshold is picked**
+
+Now: train.py tries every possible cutoff on the out-of-fold training predictions and keeps the one with the highest F1, which is about 0.57. F1 treats a missed churner and a false alarm as roughly equally bad.
+
+Improvement: pick the cutoff that minimises money lost. For example:
+
+A retention offer (discount or call) costs ₹500, and you spend it on every customer flagged.
+A lost customer costs ₹10,000 in future revenue.
+
+With those numbers, missing a churner costs 20× more than a wasted offer. The best cutoff then drops well below 0.57 (to around 0.1–0.3), so you flag more customers and catch more churners. F1 can't capture that trade-off; a cost function can.
+
+**B. Calibration**
+
+Now: the model outputs a "probability", but it isn't a reliable one. Because training up-weights churners (scale_pos_weight, class_weight="balanced"), the scores are pushed upward. When the model says 0.87, the customer's real chance of churning may be lower. Ranking is still fine, which is why ROC-AUC looks good, but the number itself isn't trustworthy.
+
+Improvement: wrap the model in CalibratedClassifierCV (isotonic or Platt/sigmoid), so that when it says 0.30, about 30% of such customers really churn. You can check this with a calibration curve or the Brier score. This matters for cost-based thresholds because expected cost = probability × cost, which only works if the probability is real.
+
+**C. Where the threshold lives**
+
+Now: the threshold is saved inside the .joblib file, so changing it means retraining or editing the artifact.
+
+Improvement: keep a default in the artifact, but let the API or a config file override it. For example, POST /predict?threshold=0.25, or a THRESHOLD setting in config or an environment variable. The business can then move the cutoff (say, when a campaign budget changes) without touching the model.
